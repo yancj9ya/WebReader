@@ -1,6 +1,8 @@
 # Local PDF Reader Web
 
 A cloud-deployed web app that reads PDF locally in the browser.
+<img width="2550" height="1437" alt="image" src="https://github.com/user-attachments/assets/aa09efa8-89f9-40ac-a82a-4722984f5083" />
+
 
 ## Privacy model
 
