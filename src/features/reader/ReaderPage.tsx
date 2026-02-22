@@ -114,12 +114,22 @@ export function ReaderPage({ bookId, onBack, onOpenBook, theme, onThemeChange }:
   const [showOutlineDialog, setShowOutlineDialog] = useState(false);
   const [showBookmarkDialog, setShowBookmarkDialog] = useState(false);
   const [nextBook, setNextBook] = useState<StoredBookMeta | null>(null);
+  const [switchingBook, setSwitchingBook] = useState(false);
 
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const pagedViewerRef = useRef<HTMLDivElement | null>(null);
   const pageRefs = useRef<Record<number, HTMLDivElement | null>>({});
   const scrollTickingRef = useRef(false);
   const wheelStateRef = useRef({ delta: 0, lastFlipAt: 0 });
+  const preloadRef = useRef<{
+    bookId: string;
+    title: string;
+    doc: PDFDocumentProxy;
+    outline: OutlineItem[];
+    bookmarks: StoredBookmark[];
+    totalPages: number;
+    lastPage: number;
+  } | null>(null);
 
   const pageOptions = useMemo(() => Array.from({ length: totalPages }, (_, i) => i + 1), [totalPages]);
   const currentBookmarked = useMemo(() => bookmarks.some((item) => item.page === pageNumber), [bookmarks, pageNumber]);
@@ -131,25 +141,57 @@ export function ReaderPage({ bookId, onBack, onOpenBook, theme, onThemeChange }:
     !!nextBook &&
     (viewMode === "double" ? pageNumber >= Math.max(1, totalPages - 1) : pageNumber >= totalPages);
 
+  async function preloadBook(targetBookId: string): Promise<void> {
+    if (preloadRef.current?.bookId === targetBookId) {
+      return;
+    }
+    const book = await getBook(targetBookId);
+    if (!book) {
+      return;
+    }
+    const loadedDoc = await openPdfFromData(book.pdfData);
+    const [outline, savedBookmarks] = await Promise.all([collectOutline(loadedDoc), listBookmarks(book.id)]);
+    preloadRef.current = {
+      bookId: book.id,
+      title: book.title,
+      doc: loadedDoc,
+      outline,
+      bookmarks: savedBookmarks,
+      totalPages: loadedDoc.numPages,
+      lastPage: book.lastPage
+    };
+  }
+
   useEffect(() => {
     let cancelled = false;
 
     async function load() {
       setError(null);
-      setDoc(null);
-      setOutlineItems([]);
-      setSearchResults([]);
+      setSwitchingBook(true);
       setNextBook(null);
 
       const [book, allBooksRaw] = await Promise.all([getBook(bookId), listBooks()]);
       if (!book) {
         setError("未找到该书籍，请返回书架重新导入。");
+        setSwitchingBook(false);
         return;
       }
 
       try {
-        const loadedDoc = await openPdfFromData(book.pdfData);
-        const [outline, savedBookmarks] = await Promise.all([collectOutline(loadedDoc), listBookmarks(book.id)]);
+        let loadedDoc: PDFDocumentProxy;
+        let outline: OutlineItem[];
+        let savedBookmarks: StoredBookmark[];
+
+        if (preloadRef.current?.bookId === book.id) {
+          loadedDoc = preloadRef.current.doc;
+          outline = preloadRef.current.outline;
+          savedBookmarks = preloadRef.current.bookmarks;
+          preloadRef.current = null;
+        } else {
+          loadedDoc = await openPdfFromData(book.pdfData);
+          [outline, savedBookmarks] = await Promise.all([collectOutline(loadedDoc), listBookmarks(book.id)]);
+        }
+
         if (cancelled) {
           return;
         }
@@ -162,6 +204,7 @@ export function ReaderPage({ bookId, onBack, onOpenBook, theme, onThemeChange }:
         setJumpInput(String(safePage));
         setOutlineItems(outline);
         setBookmarks(savedBookmarks);
+        setSearchResults([]);
 
         const allBooks = sortByShelfSequence(allBooksRaw);
         const currentIndex = allBooks.findIndex((item) => item.id === book.id);
@@ -174,6 +217,10 @@ export function ReaderPage({ bookId, onBack, onOpenBook, theme, onThemeChange }:
         if (!cancelled) {
           setError("PDF 加载失败，可能文件已损坏。");
         }
+      } finally {
+        if (!cancelled) {
+          setSwitchingBook(false);
+        }
       }
     }
 
@@ -183,6 +230,15 @@ export function ReaderPage({ bookId, onBack, onOpenBook, theme, onThemeChange }:
       cancelled = true;
     };
   }, [bookId]);
+
+  useEffect(() => {
+    if (!nextBook) {
+      return;
+    }
+    preloadBook(nextBook.id).catch(() => {
+      // Ignore preload failures and fall back to normal loading path.
+    });
+  }, [nextBook]);
 
   useEffect(() => {
     if (!doc) {
@@ -506,6 +562,7 @@ export function ReaderPage({ bookId, onBack, onOpenBook, theme, onThemeChange }:
             <span className="meta">
               页码: {doc ? pageNumber : 0}/{totalPages} | 缩放: {Math.round(scale * 100)}%
             </span>
+            {switchingBook && <span className="meta">切换中...</span>}
           </div>
         </header>
 
